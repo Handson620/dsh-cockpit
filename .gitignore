@@ -1,0 +1,5 @@
+# 同步脚本的本机配置和状态，含密钥，不进仓库
+site/config.json
+site/*.log
+__pycache__/
+.DS_Store
