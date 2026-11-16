@@ -42,6 +42,39 @@ STATE_FILE = os.path.expanduser('~/.dsh/dsh-cockpit-state.json')
 USE_CURL = True
 
 
+def find_port(cfg):
+    """DSH 每次重启端口都会变。扫所有本地监听端口，挨个试哪个能读看板。"""
+    cands = []
+    if cfg.get('board_port'):
+        cands.append(cfg['board_port'])
+
+    # 用 netstat 拿所有本地监听端口（比 lsof 稳，不依赖进程名）
+    import subprocess
+    try:
+        out = subprocess.run(['netstat', '-an'], capture_output=True, text=True, timeout=10).stdout
+        for line in out.split('\n'):
+            if '127.0.0.1.' in line and 'LISTEN' in line:
+                try:
+                    part = line.split('127.0.0.1.')[1].split()[0]
+                    port = int(part)
+                    if port not in cands and 1024 < port < 65536:
+                        cands.append(port)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 按端口号从大到小试（DSH 的端口通常在高位段，新的更新）
+    for port in sorted(cands, reverse=True):
+        try:
+            status, text = http('GET', f'http://127.0.0.1:{port}/dsh-taskboard/state', {}, timeout=2)
+            if status == 200 and 'dsh-taskboard' in text or (status == 200 and '"ok":true' in text.replace(' ', '')):
+                return port
+        except Exception:
+            continue
+    return cfg.get('board_port')
+
+
 def load_config():
     if not os.path.exists(CONFIG):
         print(f'缺少配置：{CONFIG}', file=sys.stderr)
@@ -72,7 +105,7 @@ def http(method, url, headers, body=None, timeout=30):
 def read_board():
     """读本机看板文件（只读）。也尝试从 DSH HTTP 接口读，拿到最新的。"""
     cfg = load_config()
-    port = cfg.get('board_port')
+    port = find_port(cfg)
     if port:
         try:
             status, text = http('GET', f'http://127.0.0.1:{port}/dsh-taskboard/state', {}, timeout=8)
@@ -209,7 +242,7 @@ def pull(cfg, dry):
         except Exception:
             pass
 
-    port = cfg.get('board_port', 49854)
+    port = find_port(cfg)
     ok = fail = skip = 0
     for a in actions:
         key = a.get('key', '')

@@ -100,6 +100,18 @@
 let TOKEN = sessionStorage.getItem('cockpit_token') || '';
 const $ = s => document.querySelector(s);
 const OPEN = new Set();   // 记住展开了哪些，刷新后不丢
+// 本地已处理的任务：提交成功后立刻记下来，刷新时先隐藏，
+// 等本机同步完（云端状态变了）再真正消失。避免"点完又弹回来"。
+const HANDLED = new Set(JSON.parse(localStorage.getItem('cockpit_handled') || '[]'));
+function markHandled(id) {
+  HANDLED.add(id);
+  try { localStorage.setItem('cockpit_handled', JSON.stringify([...HANDLED].slice(-200))); } catch (e) {}
+}
+function unmarkHandled(id) {
+  if (HANDLED.delete(id)) {
+    try { localStorage.setItem('cockpit_handled', JSON.stringify([...HANDLED])); } catch (e) {}
+  }
+}
 
 function fmt(ts) {
   if (!ts) return '';
@@ -129,7 +141,12 @@ async function load() {
 }
 
 function render(board) {
-  const tasks = (board.tasks || []).filter(t => t.status === 'in_review' && !t.trashedAt);
+  // 云端状态已经变的（不是 in_review 了）就从本地记录里清掉
+  for (const t of (board.tasks || [])) {
+    if (t.status !== 'in_review') unmarkHandled(t.id);
+  }
+  const tasks = (board.tasks || []).filter(t =>
+    t.status === 'in_review' && !t.trashedAt && !HANDLED.has(t.id));
   $('#count').innerHTML = tasks.length ? `待验收 <b>${tasks.length}</b> 件` : '';
   $('#stamp').textContent = '更新于 ' + fmt(board.synced_at);
   if (!tasks.length) {
@@ -182,14 +199,21 @@ async function act(id, action, btn) {
     });
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'failed');
+    // 记到本地，刷新也不会再弹回来
+    markHandled(id);
     card.classList.add('done');
     const btns = card.querySelector('.btns');
-    btns.outerHTML = `<div class="donebar">${action === 'approve' ? '✓ 已通过' : '↩ 已打回'}，等本机同步</div>`;
-    const cnt = $('#count');
+    if (btns) btns.outerHTML = `<div class="donebar">${action === 'approve' ? '✓ 已通过' : '↩ 已打回'}，正在等本机确认…</div>`;
     const left = document.querySelectorAll('.card:not(.done)').length;
-    cnt.innerHTML = left ? `待验收 <b>${left}</b> 件` : '';
-    if (!left) setTimeout(load, 1200);
+    $('#count').innerHTML = left ? `待验收 <b>${left}</b> 件` : '';
     msg(action === 'approve' ? '已提交通过' : '已提交打回', 'ok');
+    // 2 秒后从页面上移除这张卡（视觉上干脆一点）
+    setTimeout(() => {
+      card.style.transition = 'opacity .3s, transform .3s';
+      card.style.opacity = '0';
+      card.style.transform = 'scale(.97)';
+      setTimeout(() => card.remove(), 320);
+    }, 2000);
   } catch (e) {
     card.querySelectorAll('button').forEach(b => b.disabled = false);
     msg('提交失败，再点一次', 'err');
