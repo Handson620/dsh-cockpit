@@ -28,6 +28,8 @@ export async function onRequestPost({ env, request }) {
   }
   const key = `action:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
   await env.COCKPIT_KV.put(key, JSON.stringify({ taskId, action, at: Date.now() }))
+  // 打个标记，让 Mac 那边知道可能有货，不用每次盲 list
+  await env.COCKPIT_KV.put('has_action', '1')
   return json({ ok: true })
 }
 
@@ -36,6 +38,10 @@ export async function onRequestGet({ env, request }) {
   if (!env.SYNC_TOKEN || sync !== env.SYNC_TOKEN) {
     return json({ ok: false, error: 'unauthorized' }, 401)
   }
+  // 没标记说明没动作，直接返回，省掉 list 和 get 的额度
+  const flag = await env.COCKPIT_KV.get('has_action')
+  if (!flag) return json({ ok: true, actions: [] })
+
   const list = await env.COCKPIT_KV.list({ prefix: 'action:' })
   const actions = []
   for (const k of list.keys) {
@@ -44,5 +50,6 @@ export async function onRequestGet({ env, request }) {
   }
   // 拉走就删，Mac 只处理一次
   for (const k of list.keys) await env.COCKPIT_KV.delete(k.name)
+  await env.COCKPIT_KV.delete('has_action')
   return json({ ok: true, actions })
 }

@@ -119,15 +119,38 @@ def snapshot(board):
     }
 
 
+PUSH_HASH = os.path.expanduser('~/.dsh/cockpit/.last-push')
+
+
 def push(cfg, dry):
+    """数据没变就不推，省 KV 写入额度（免费额度每天只有 1000 次写）。"""
+    import hashlib
     snap = snapshot(read_board())
     url = cfg['base_url'].rstrip('/') + '/api/board'
+    blob = json.dumps(snap, ensure_ascii=False, sort_keys=True)
+    # 指纹只算任务内容，不含 synced_at —— 那个时间戳每次都变，会让去重永远失效
+    digest = hashlib.sha256(
+        json.dumps(snap['tasks'], ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+
+    if not dry:
+        try:
+            if open(PUSH_HASH).read().strip() == digest:
+                print('[推] 没变化，跳过')
+                return 0
+        except Exception:
+            pass
+
     if dry:
         print(f'[推] {len(snap["tasks"])} 张卡 → {url}')
         return 0
     status, text = http('POST', url, {'X-Sync-Token': cfg['sync_token']},
-                        json.dumps(snap, ensure_ascii=False), timeout=30)
+                        blob, timeout=30)
     if status == 200:
+        try:
+            open(PUSH_HASH, 'w').write(digest)
+        except Exception:
+            pass
         print(f'[推] 成功，{len(snap["tasks"])} 张卡')
         return 0
     print(f'[推] 失败 HTTP {status}: {text[:200]}', file=sys.stderr)
